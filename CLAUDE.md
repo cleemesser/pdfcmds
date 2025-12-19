@@ -20,8 +20,10 @@ pytest
 The package provides a `pdf` command-line tool:
 
 ```bash
-pdf convert --to markdown input.pdf          # Output to stdout
-pdf convert --to markdown input.pdf -o out.md  # Output to file
+pdf convert --to markdown input.pdf             # Output to input.md (default)
+pdf convert --to markdown input.pdf -o out.md   # Output to specific file
+pdf convert --to markdown input.pdf --stdout    # Output to stdout
+pdf check                                        # Check if Tesseract OCR is installed
 ```
 
 ## OCR Setup
@@ -110,18 +112,18 @@ tesseract --list-langs
 ```
 
 **Common language codes:**
-| Code | Language |
-|------|----------|
-| eng | English |
-| deu | German |
-| fra | French |
-| spa | Spanish |
-| chi_sim | Chinese (Simplified) |
+| Code    | Language              |
+|---------|-----------------------|
+| eng     | English               |
+| deu     | German                |
+| fra     | French                |
+| spa     | Spanish               |
+| chi_sim | Chinese (Simplified)  |
 | chi_tra | Chinese (Traditional) |
-| jpn | Japanese |
-| kor | Korean |
-| ara | Arabic |
-| rus | Russian |
+| jpn     | Japanese              |
+| kor     | Korean                |
+| ara     | Arabic                |
+| rus     | Russian               |
 
 #### Installing Language Files
 
@@ -170,20 +172,67 @@ Option 2: Download language files manually:
 
 Tesseract offers three tessdata variants:
 
-| Variant | Description | Use Case |
-|---------|-------------|----------|
-| [tessdata](https://github.com/tesseract-ocr/tessdata) | Standard, integer-based | Good balance of speed/accuracy |
-| [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) | Float-based, most accurate | When accuracy is critical |
-| [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) | Optimized for speed | When speed is critical |
+| Variant                                                         | Description                | Use Case                       |
+|-----------------------------------------------------------------|----------------------------|--------------------------------|
+| [tessdata](https://github.com/tesseract-ocr/tessdata)           | Standard, integer-based    | Good balance of speed/accuracy |
+| [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) | Float-based, most accurate | When accuracy is critical      |
+| [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) | Optimized for speed        | When speed is critical         |
 
 ## Architecture
 
 This is a CLI tool for PDF manipulation built on PyMuPDF and PyMuPDF4LLM.
 
 - **pdfcmds/cli.py**: Click-based CLI with command groups. Entry point is `main()`.
-- **pdfcmds/__init__.py**: Package version (used by pyproject.toml dynamic versioning).
+- **pdfcmds/\_\_init__.py**: Package version (used by pyproject.toml dynamic versioning).
 
 New commands should be added as functions decorated with `@main.command()` in cli.py.
+
+## Known Issues
+
+### pymupdf-layout ignores image_path parameter
+
+**Affected versions:**
+- pymupdf: 1.26.6
+- pymupdf4llm: 0.2.7
+- pymupdf-layout: 1.26.6
+
+**Bug:** When `pymupdf.layout` is activated (required for enhanced layout detection), the `image_path` parameter passed to `pymupdf4llm.to_markdown()` is ignored. Images are written to the source PDF's directory instead of the specified path.
+
+**Workarounds implemented in pdfcmds:**
+
+1. **Resolve input paths to absolute** - Prevents path concatenation errors when relative paths are used
+2. **Post-process markdown** - Convert absolute image paths in output to relative paths using `_make_image_paths_relative()`
+
+**Minimal reproduction:**
+
+```python
+import tempfile
+from pathlib import Path
+
+import pymupdf.layout
+pymupdf.layout.activate()
+
+import pymupdf4llm
+
+pdf_path = Path("test.pdf").resolve()
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    image_dir = Path(tmpdir) / "images"
+    image_dir.mkdir()
+
+    md = pymupdf4llm.to_markdown(
+        str(pdf_path),
+        write_images=True,
+        image_path=str(image_dir)
+    )
+
+    # Expected: images in image_dir
+    # Actual: images in pdf_path.parent (BUG)
+    print(f"Images in image_dir: {list(image_dir.glob('*.png'))}")
+    print(f"Images in PDF dir: {list(pdf_path.parent.glob('*.png'))}")
+```
+
+**Status:** Not yet reported upstream. See `bug_report_example.py` for a runnable test case.
 
 ## Python Project Standards
 
@@ -205,3 +254,11 @@ version = {attr = "package.__version__"}
 
 ### development
 - use uv as standard development tool
+
+### references
+- see especially: https://github.com/pymupdf/PyMuPDF-Utilities for lots of examples
+- see https://github.com/pymupdf/pymupdf4llm/discussions/327 for summary of what changes when import pymupdf.layout
+## TODO
+- [ ] add support for other pymupdf/llm ouptuts like json and txt
+- [ ] testing from others with and without tesseract
+- [ ] Publish to PyPI

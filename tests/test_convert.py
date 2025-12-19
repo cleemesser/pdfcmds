@@ -1,5 +1,6 @@
 """Tests for PDF conversion."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from pdfcmds.cli import main
 
 DATA_DIR = Path(__file__).parent / "data"
 SAMPLE_PDF = DATA_DIR / "paper-with-figures.pdf"
+# Relative path from project root for testing relative path handling
+SAMPLE_PDF_RELATIVE = "tests/data/paper-with-figures.pdf"
 
 
 @pytest.fixture
@@ -87,6 +90,34 @@ class TestConvert:
             # Verify images were actually created (pymupdf-layout writes them next to PDF)
             image_files = list(DATA_DIR.glob("*.png"))
             assert len(image_files) > 0, "Expected at least one image to be extracted"
+
+    def test_convert_with_relative_path_and_images(self, runner):
+        """Test converting PDF using relative path with image extraction.
+
+        This test ensures that relative paths are handled correctly by pymupdf-layout.
+        Previously, relative paths caused image save errors.
+        """
+        # Change to project root so relative path is valid
+        project_root = DATA_DIR.parent.parent
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(project_root)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "output.md"
+                result = runner.invoke(
+                    main,
+                    [
+                        "convert",
+                        "--to", "markdown",
+                        SAMPLE_PDF_RELATIVE,  # Use relative path
+                        "-o", str(output_path),
+                        "--write-images",
+                    ],
+                )
+                assert result.exit_code == 0, f"Command failed: {result.output}"
+                assert output_path.exists()
+        finally:
+            os.chdir(original_cwd)
 
 
 class TestCheck:

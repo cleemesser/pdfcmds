@@ -60,6 +60,28 @@ import pymupdf.layout
 pymupdf.layout.activate()
 
 import pymupdf4llm
+import re
+
+
+def _try_relative(img_path: str, output_dir: Path) -> str:
+    """Try to convert an image path to be relative to output_dir."""
+    try:
+        abs_path = Path(img_path)
+        if abs_path.is_absolute():
+            return abs_path.relative_to(output_dir).as_posix()
+    except ValueError:
+        pass
+    return img_path
+
+
+def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
+    """Convert absolute image paths in markdown to relative paths."""
+    # Match markdown image syntax: ![alt](path)
+    return re.sub(
+        r"!\[([^\]]*)\]\(([^)]+)\)",
+        lambda m: f"![{m.group(1)}]({_try_relative(m.group(2), output_dir)})",
+        md_text
+    )
 
 
 @click.group()
@@ -104,7 +126,7 @@ def main():
 )
 def convert(input_file: Path, output_format: str, output: Path | None, use_stdout: bool, write_images: bool, image_dir: Path | None):
     """Convert PDF to other formats."""
-    # Resolve to absolute path to avoid issues with pymupdf-layout image paths
+    # Resolve to absolute path to avoid pymupdf-layout path concatenation issues
     input_file = input_file.resolve()
 
     if output_format in ("markdown", "md"):
@@ -125,6 +147,10 @@ def convert(input_file: Path, output_format: str, output: Path | None, use_stdou
             kwargs["image_path"] = str(image_dir)
 
         md_text = pymupdf4llm.to_markdown(str(input_file), **kwargs)
+
+        # Convert absolute image paths to relative (pymupdf-layout uses absolute paths)
+        if write_images and output:
+            md_text = _make_image_paths_relative(md_text, output.parent.resolve())
 
         if use_stdout:
             # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
