@@ -19,24 +19,37 @@ def runner():
 
 
 @pytest.fixture(autouse=True)
-def cleanup_images():
-    """Clean up any images created during tests."""
+def cleanup_files():
+    """Clean up any files created during tests."""
     yield
     # pymupdf-layout writes images next to the PDF, so clean them up
     for png in DATA_DIR.glob("*.png"):
         png.unlink()
+    # Clean up default .md output files
+    default_md = DATA_DIR / "paper-with-figures.md"
+    if default_md.exists():
+        default_md.unlink()
 
 
 class TestConvert:
     """Tests for the convert command."""
 
-    def test_convert_to_markdown_stdout(self, runner):
-        """Test converting PDF to markdown output to stdout."""
+    def test_convert_to_markdown_default_output(self, runner):
+        """Test converting PDF to markdown with default output file."""
         result = runner.invoke(main, ["convert", "--to", "markdown", str(SAMPLE_PDF)])
         assert result.exit_code == 0
+        # Check default output file was created
+        default_output = SAMPLE_PDF.with_suffix(".md")
+        assert default_output.exists()
+        content = default_output.read_text(encoding="utf-8")
+        assert len(content) > 0
+
+    def test_convert_to_markdown_stdout(self, runner):
+        """Test converting PDF to markdown with --stdout flag."""
+        result = runner.invoke(main, ["convert", "--to", "markdown", "--stdout", str(SAMPLE_PDF)])
+        assert result.exit_code == 0
+        # Output should be in stdout, not a file
         assert len(result.output) > 0
-        # Check that we got some markdown content
-        assert "#" in result.output or result.output.strip()
 
     def test_convert_to_markdown_file(self, runner):
         """Test converting PDF to markdown output to file."""

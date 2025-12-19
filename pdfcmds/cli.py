@@ -17,8 +17,11 @@ WINDOWS_TESSERACT_PATHS = [
 ]
 
 
-def _find_tesseract_early() -> None:
-    """Configure Tesseract environment before pymupdf imports."""
+def _find_tesseract_early() -> Path | None:
+    """Configure Tesseract environment before pymupdf imports.
+
+    Returns the path to tesseract executable if found.
+    """
     tesseract_path = None
 
     # First check PATH
@@ -32,13 +35,20 @@ def _find_tesseract_early() -> None:
                 tesseract_path = path
                 break
 
-    # Configure environment if found on Windows but not in PATH
-    if tesseract_path and sys.platform == "win32" and not path_result:
-        tesseract_dir = str(tesseract_path.parent)
-        os.environ["PATH"] = tesseract_dir + os.pathsep + os.environ.get("PATH", "")
-        tessdata_dir = tesseract_path.parent / "tessdata"
-        if tessdata_dir.exists() and "TESSDATA_PREFIX" not in os.environ:
-            os.environ["TESSDATA_PREFIX"] = str(tessdata_dir)
+    if tesseract_path:
+        tesseract_dir = tesseract_path.parent
+
+        # On Windows, add to PATH if not already there
+        if sys.platform == "win32" and not path_result:
+            os.environ["PATH"] = str(tesseract_dir) + os.pathsep + os.environ.get("PATH", "")
+
+        # Always set TESSDATA_PREFIX if not already set (needed by pymupdf)
+        if "TESSDATA_PREFIX" not in os.environ:
+            tessdata_dir = tesseract_dir / "tessdata"
+            if tessdata_dir.exists():
+                os.environ["TESSDATA_PREFIX"] = str(tessdata_dir)
+
+    return tesseract_path
 
 
 # Configure Tesseract before importing pymupdf (which may use it)
@@ -72,7 +82,14 @@ def main():
     "-o",
     "--output",
     type=click.Path(path_type=Path),
-    help="Output file path (defaults to stdout)",
+    help="Output file path (defaults to {input}.md)",
+)
+@click.option(
+    "--stdout",
+    "use_stdout",
+    is_flag=True,
+    default=False,
+    help="Write output to stdout instead of file",
 )
 @click.option(
     "--write-images",
@@ -85,27 +102,36 @@ def main():
     type=click.Path(path_type=Path),
     help="Directory for extracted images (default: {input}_images)",
 )
-def convert(input_file: Path, output_format: str, output: Path | None, write_images: bool, image_dir: Path | None):
+def convert(input_file: Path, output_format: str, output: Path | None, use_stdout: bool, write_images: bool, image_dir: Path | None):
     """Convert PDF to other formats."""
+    # Resolve to absolute path to avoid issues with pymupdf-layout image paths
+    input_file = input_file.resolve()
+
     if output_format in ("markdown", "md"):
+        # Default output is {input_stem}.md unless --stdout is specified
+        if output is None and not use_stdout:
+            output = input_file.with_suffix(".md")
+
         kwargs = {}
         if write_images:
             kwargs["write_images"] = True
             # Default image directory is {input_stem}_images
             if image_dir is None:
                 image_dir = input_file.parent / f"{input_file.stem}_images"
+            else:
+                image_dir = image_dir.resolve()
             # Create the image directory if it doesn't exist
             image_dir.mkdir(parents=True, exist_ok=True)
             kwargs["image_path"] = str(image_dir)
 
         md_text = pymupdf4llm.to_markdown(str(input_file), **kwargs)
 
-        if output:
-            output.write_text(md_text, encoding="utf-8")
-            click.echo(f"Converted to {output}", err=True)
-        else:
+        if use_stdout:
             # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
             sys.stdout.buffer.write(md_text.encode("utf-8"))
+        else:
+            output.write_text(md_text, encoding="utf-8")
+            click.echo(f"Converted to {output}", err=True)
 
 
 def find_tesseract() -> Path | None:
@@ -151,16 +177,20 @@ def check():
     tesseract_path = find_tesseract()
     if tesseract_path:
         in_path = shutil.which("tesseract") is not None
-        status = "installed" if in_path else "installed (not in PATH)"
+        status = "installed" if in_path else "installed (auto-configured)"
         click.echo(f"Tesseract OCR: {status}")
-        click.echo(f"  Location: {tesseract_path}")
-        if not in_path:
-            click.echo("  Tip: Add to PATH for best compatibility")
-        # Check for tessdata
+        click.echo(f"  Executable: {tesseract_path}")
+
+        # Show TESSDATA_PREFIX
+        tessdata_prefix = os.environ.get("TESSDATA_PREFIX")
+        if tessdata_prefix:
+            click.echo(f"  TESSDATA_PREFIX: {tessdata_prefix}")
+
+        # Check for tessdata and languages
         tessdata_dir = tesseract_path.parent / "tessdata"
         if tessdata_dir.exists():
-            langs = list(tessdata_dir.glob("*.traineddata"))
-            click.echo(f"  Languages: {len(langs)} installed")
+            langs = sorted([p.stem for p in tessdata_dir.glob("*.traineddata")])
+            click.echo(f"  Languages ({len(langs)}): {', '.join(langs)}")
     else:
         click.echo("Tesseract OCR: not found")
         click.echo("  OCR for scanned PDFs will not be available.")
