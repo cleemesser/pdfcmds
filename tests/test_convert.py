@@ -49,7 +49,9 @@ class TestConvert:
 
     def test_convert_to_markdown_stdout(self, runner):
         """Test converting PDF to markdown with --stdout flag."""
-        result = runner.invoke(main, ["convert", "--to", "markdown", "--stdout", str(SAMPLE_PDF)])
+        result = runner.invoke(
+            main, ["convert", "--to", "markdown", "--stdout", str(SAMPLE_PDF)]
+        )
         assert result.exit_code == 0
         # Output should be in stdout, not a file
         assert len(result.output) > 0
@@ -60,7 +62,14 @@ class TestConvert:
             output_path = Path(tmpdir) / "output.md"
             result = runner.invoke(
                 main,
-                ["convert", "--to", "markdown", str(SAMPLE_PDF), "-o", str(output_path)],
+                [
+                    "convert",
+                    "--to",
+                    "markdown",
+                    str(SAMPLE_PDF),
+                    "-o",
+                    str(output_path),
+                ],
             )
             assert result.exit_code == 0
             assert output_path.exists()
@@ -71,14 +80,19 @@ class TestConvert:
         """Test converting PDF to markdown with image extraction."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "output.md"
+            image_dir = Path(tmpdir) / "images"
             result = runner.invoke(
                 main,
                 [
                     "convert",
-                    "--to", "markdown",
+                    "--to",
+                    "markdown",
                     str(SAMPLE_PDF),
-                    "-o", str(output_path),
+                    "-o",
+                    str(output_path),
                     "--write-images",
+                    "--image-dir",
+                    str(image_dir),
                 ],
             )
             assert result.exit_code == 0
@@ -87,9 +101,12 @@ class TestConvert:
             # Check that markdown contains image references
             assert "![" in content, "Expected markdown to contain image references"
             assert ".png" in content, "Expected markdown to reference PNG images"
-            # Verify images were actually created (pymupdf-layout writes them next to PDF)
-            image_files = list(DATA_DIR.glob("*.png"))
-            assert len(image_files) > 0, "Expected at least one image to be extracted"
+            # Verify images were extracted to the specified directory (not PDF directory)
+            image_files = list(image_dir.glob("*.png"))
+            assert len(image_files) > 0, "Expected at least one image in --image-dir"
+            # Verify no images were left in PDF directory (the bug we fixed)
+            pdf_dir_images = list(DATA_DIR.glob("*.png"))
+            assert len(pdf_dir_images) == 0, "Images should not be in PDF directory"
 
     def test_convert_with_relative_path_and_images(self, runner):
         """Test converting PDF using relative path with image extraction.
@@ -108,9 +125,11 @@ class TestConvert:
                     main,
                     [
                         "convert",
-                        "--to", "markdown",
+                        "--to",
+                        "markdown",
                         SAMPLE_PDF_RELATIVE,  # Use relative path
-                        "-o", str(output_path),
+                        "-o",
+                        str(output_path),
                         "--write-images",
                     ],
                 )
@@ -118,6 +137,46 @@ class TestConvert:
                 assert output_path.exists()
         finally:
             os.chdir(original_cwd)
+
+    def test_convert_with_embed_images(self, runner):
+        """Test converting PDF to markdown with embedded base64 images."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "output.md"
+            result = runner.invoke(
+                main,
+                [
+                    "convert",
+                    "--to",
+                    "markdown",
+                    str(SAMPLE_PDF),
+                    "-o",
+                    str(output_path),
+                    "--embed-images",
+                ],
+            )
+            assert result.exit_code == 0
+            assert output_path.exists()
+            content = output_path.read_text(encoding="utf-8")
+            # Check that markdown contains base64 embedded images
+            assert "data:image" in content, (
+                "Expected markdown to contain base64 embedded images"
+            )
+
+    def test_write_and_embed_images_mutually_exclusive(self, runner):
+        """Test that --write-images and --embed-images cannot be used together."""
+        result = runner.invoke(
+            main,
+            [
+                "convert",
+                "--to",
+                "markdown",
+                str(SAMPLE_PDF),
+                "--write-images",
+                "--embed-images",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
 
 
 class TestCheck:

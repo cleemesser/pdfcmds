@@ -28,8 +28,11 @@ pdf convert --to markdown document.pdf -o output.md
 # Output to stdout (for piping)
 pdf convert --to markdown document.pdf --stdout
 
-# Extract images during conversion
+# Extract images to files during conversion
 pdf convert --to markdown document.pdf --write-images
+
+# Embed images as base64 in the markdown (no external files)
+pdf convert --to markdown document.pdf --embed-images
 ```
 
 ### Check Dependencies

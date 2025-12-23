@@ -20,11 +20,15 @@ pytest
 The package provides a `pdf` command-line tool:
 
 ```bash
-pdf convert --to markdown input.pdf             # Output to input.md (default)
-pdf convert --to markdown input.pdf -o out.md   # Output to specific file
-pdf convert --to markdown input.pdf --stdout    # Output to stdout
-pdf check                                        # Check if Tesseract OCR is installed
+pdf convert --to markdown input.pdf               # Output to input.md (default)
+pdf convert --to markdown input.pdf -o out.md     # Output to specific file
+pdf convert --to markdown input.pdf --stdout      # Output to stdout
+pdf convert --to markdown input.pdf --write-images  # Extract images to files
+pdf convert --to markdown input.pdf --embed-images  # Embed images as base64
+pdf check                                          # Check if Tesseract OCR is installed
 ```
+
+Note: `--write-images` and `--embed-images` are mutually exclusive.
 
 ## OCR Setup
 

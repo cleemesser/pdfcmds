@@ -11,7 +11,9 @@ import click
 WINDOWS_TESSERACT_PATHS = [
     Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
     Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
-    Path(os.environ.get("LOCALAPPDATA", ""), "Programs", "Tesseract-OCR", "tesseract.exe"),
+    Path(
+        os.environ.get("LOCALAPPDATA", ""), "Programs", "Tesseract-OCR", "tesseract.exe"
+    ),
     Path(os.environ.get("ProgramFiles", ""), "Tesseract-OCR", "tesseract.exe"),
     Path(os.environ.get("ProgramFiles(x86)", ""), "Tesseract-OCR", "tesseract.exe"),
 ]
@@ -40,7 +42,9 @@ def _find_tesseract_early() -> Path | None:
 
         # On Windows, add to PATH if not already there
         if sys.platform == "win32" and not path_result:
-            os.environ["PATH"] = str(tesseract_dir) + os.pathsep + os.environ.get("PATH", "")
+            os.environ["PATH"] = (
+                str(tesseract_dir) + os.pathsep + os.environ.get("PATH", "")
+            )
 
         # Always set TESSDATA_PREFIX if not already set (needed by pymupdf)
         if "TESSDATA_PREFIX" not in os.environ:
@@ -80,8 +84,34 @@ def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
     return re.sub(
         r"!\[([^\]]*)\]\(([^)]+)\)",
         lambda m: f"![{m.group(1)}]({_try_relative(m.group(2), output_dir)})",
-        md_text
+        md_text,
     )
+
+
+def _move_images_to_correct_dir(
+    pdf_dir: Path, image_dir: Path, md_text: str, existing_images: set[Path]
+) -> str:
+    """Move images from PDF directory to specified image_dir and update markdown.
+
+    Workaround for pymupdf-layout bug where image_path parameter is ignored.
+    Images are written to the PDF's directory instead of the specified path.
+    """
+    # Find new images created by to_markdown()
+    current_images = set(pdf_dir.glob("*.png"))
+    new_images = current_images - existing_images
+
+    # Move each new image to the target directory
+    for img in new_images:
+        dest = image_dir / img.name
+        shutil.move(str(img), str(dest))
+
+    # Update markdown to reference new locations
+    for img in new_images:
+        old_path = str(img)
+        new_path = str(image_dir / img.name)
+        md_text = md_text.replace(old_path, new_path)
+
+    return md_text
 
 
 @click.group()
@@ -120,12 +150,32 @@ def main():
     help="Extract images to a directory (default: {input}_images)",
 )
 @click.option(
+    "--embed-images",
+    is_flag=True,
+    default=False,
+    help="Embed images as base64 in the markdown output",
+)
+@click.option(
     "--image-dir",
     type=click.Path(path_type=Path),
     help="Directory for extracted images (default: {input}_images)",
 )
-def convert(input_file: Path, output_format: str, output: Path | None, use_stdout: bool, write_images: bool, image_dir: Path | None):
+def convert(
+    input_file: Path,
+    output_format: str,
+    output: Path | None,
+    use_stdout: bool,
+    write_images: bool,
+    embed_images: bool,
+    image_dir: Path | None,
+):
     """Convert PDF to other formats."""
+    # Validate mutually exclusive options
+    if write_images and embed_images:
+        raise click.UsageError(
+            "--write-images and --embed-images are mutually exclusive"
+        )
+
     # Resolve to absolute path to avoid pymupdf-layout path concatenation issues
     input_file = input_file.resolve()
 
@@ -135,18 +185,32 @@ def convert(input_file: Path, output_format: str, output: Path | None, use_stdou
             output = input_file.with_suffix(".md")
 
         kwargs = {}
-        if write_images:
+        pdf_dir = input_file.parent
+        existing_images = set()
+
+        if embed_images:
+            kwargs["embed_images"] = True
+        elif write_images:
             kwargs["write_images"] = True
             # Default image directory is {input_stem}_images
             if image_dir is None:
-                image_dir = input_file.parent / f"{input_file.stem}_images"
+                image_dir = pdf_dir / f"{input_file.stem}_images"
             else:
                 image_dir = image_dir.resolve()
             # Create the image directory if it doesn't exist
             image_dir.mkdir(parents=True, exist_ok=True)
             kwargs["image_path"] = str(image_dir)
+            # Record existing images before conversion (for workaround)
+            existing_images = set(pdf_dir.glob("*.png"))
 
         md_text = pymupdf4llm.to_markdown(str(input_file), **kwargs)
+
+        # Workaround: pymupdf-layout ignores image_path and writes to PDF directory
+        # Move images to the correct location and update markdown paths
+        if write_images:
+            md_text = _move_images_to_correct_dir(
+                pdf_dir, image_dir, md_text, existing_images
+            )
 
         # Convert absolute image paths to relative (pymupdf-layout uses absolute paths)
         if write_images and output:
