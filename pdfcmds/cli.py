@@ -1,6 +1,7 @@
 """Command-line interface for pdfcmds."""
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -59,12 +60,12 @@ def _find_tesseract_early() -> Path | None:
 _find_tesseract_early()
 
 # Activate PyMuPDF Layout before importing pymupdf4llm for enhanced layout detection
-import pymupdf.layout
+# it is possible this could be moved before the Tesseract configuration above
+import pymupdf.layout  # noqa: E402
 
 pymupdf.layout.activate()
 
-import pymupdf4llm
-import re
+import pymupdf4llm  # noqa:E402
 
 
 def _try_relative(img_path: str, output_dir: Path) -> str:
@@ -72,7 +73,7 @@ def _try_relative(img_path: str, output_dir: Path) -> str:
     try:
         abs_path = Path(img_path)
         if abs_path.is_absolute():
-            return abs_path.relative_to(output_dir).as_posix()
+            return abs_path.relative_to(output_dir).as_posix()  # I love pathlib so much
     except ValueError:
         pass
     return img_path
@@ -264,7 +265,8 @@ def is_tesseract_installed() -> bool:
 def check():
     """Check if optional dependencies are installed."""
     # Check Tesseract
-    tesseract_path = find_tesseract()
+    # tesseract_path = find_tesseract()
+    tesseract_path = _find_tesseract_early()
     if tesseract_path:
         in_path = shutil.which("tesseract") is not None
         status = "installed" if in_path else "installed (auto-configured)"
