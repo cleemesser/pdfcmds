@@ -8,10 +8,10 @@ Install as a standalone CLI tool using [uv](https://docs.astral.sh/uv/) or [pipx
 
 ```bash
 # Using uv (recommended)
-uv tool install git+https://github.com/clee/pdfcmds
+uv tool install git+https://github.com/cleemesser/pdfcmds
 
 # Using pipx
-pipx install git+https://github.com/clee/pdfcmds
+pipx install git+https://github.com/cleemesser/pdfcmds
 ```
 
 ## Usage
