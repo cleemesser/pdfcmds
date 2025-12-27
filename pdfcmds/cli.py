@@ -19,11 +19,16 @@ WINDOWS_TESSERACT_PATHS = [
     Path(os.environ.get("ProgramFiles(x86)", ""), "Tesseract-OCR", "tesseract.exe"),
 ]
 
+# definining _find_tesseract_early() here as it may be that found on import of pymupdf/pymupdf.layout
 
 def _find_tesseract_early() -> Path | None:
     """Configure Tesseract environment before pymupdf imports.
 
+    if find in common windows locations, will add the the environment
+    os.environ["PATH"] if it is not already there
+
     Returns the path to tesseract executable if found.
+
     """
     tesseract_path = None
 
@@ -226,7 +231,8 @@ def convert(
 
 
 def find_tesseract() -> Path | None:
-    """Find Tesseract executable, checking PATH and common Windows locations."""
+    """Find Tesseract executable, checking PATH and common Windows locations.
+    This version does not add to the environment path"""
     # First check PATH
     path_result = shutil.which("tesseract")
     if path_result:
