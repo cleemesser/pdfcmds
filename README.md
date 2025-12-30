@@ -137,3 +137,9 @@ This tool is built on:
 ## License
 
 MIT
+
+## Future directions for mathematics especially
+- The work on [Nougat: Neural Optical Understanding for academic Documents](https://github.com/facebookresearch/nougat) seems
+interesting
+
+- Mathpix seems like a good commercial option
