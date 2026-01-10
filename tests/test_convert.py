@@ -10,9 +10,11 @@ from click.testing import CliRunner
 from pdfcmds.cli import main
 
 DATA_DIR = Path(__file__).parent / "data"
-SAMPLE_PDF = DATA_DIR / "paper-with-figures.pdf"
+#SAMPLE_PDF = DATA_DIR / "paper-with-figures.pdf"
+SAMPLE_PDF = DATA_DIR / "power2022-grokking.pdf"
 # Relative path from project root for testing relative path handling
-SAMPLE_PDF_RELATIVE = "tests/data/paper-with-figures.pdf"
+#SAMPLE_PDF_RELATIVE = "tests/data/paper-with-figures.pdf"
+SAMPLE_PDF_RELATIVE = "tests/data/power2022-grokking.pdf"
 
 
 @pytest.fixture
