@@ -139,7 +139,14 @@ This tool is built on:
 MIT
 
 ## Future directions for mathematics especially
-- The work on [Nougat: Neural Optical Understanding for academic Documents](https://github.com/facebookresearch/nougat) seems
-interesting
-
-- Mathpix seems like a good commercial option
+- The work on [Nougat: Neural Optical Understanding for academic
+  Documents](https://github.com/facebookresearch/nougat) seems interesting
+This installs but does not quite work on the first pdf I tried
+```
+uv tool install -U git+https://github.com/facebookresearch/nougat --with torch --with torchvision --index https://download.pytorch.org/wh1/cu126
+```
+- Mathpix integration seems like a good commercial option for handling equations
+- [SnapXam Math api] (https://www.snapxam.com/apis/math-apis)
+```
+pip install snapxam-math-ocr
+```
