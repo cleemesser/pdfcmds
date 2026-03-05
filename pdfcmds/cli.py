@@ -73,28 +73,29 @@ pymupdf.layout.activate()
 import pymupdf4llm  # noqa:E402
 
 
-def _try_relative(img_path: str, output_dir: Path) -> str:
-    """Try to convert an image path to be relative to output_dir."""
-    try:
-        abs_path = Path(img_path)
-        if abs_path.is_absolute():
-            return abs_path.relative_to(output_dir).as_posix()  # I love pathlib so much
-    except ValueError:
-        pass
-    return img_path
 
 
 def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
-    """Convert absolute image paths in markdown to relative paths."""
+    """Convert absolute image paths in markdown text to relative paths.
+
+    @md_text: str text of the markdown file
+    @output_dir: Path to the base directory things should be relative to
+    """
+
     # Match markdown image syntax: ![alt](path)
+    # group(1) is the alt text
+    # group(2) is the path to the image file
+    # need to resolve this to an absolute path and then make it relative to the
+    # base path output_dir
     return re.sub(
         r"!\[([^\]]*)\]\(([^)]+)\)",
-        lambda m: f"![{m.group(1)}]({_try_relative(m.group(2), output_dir)})",
+        lambda m: f"![{m.group(1)}]({Path(m.group(2)).resolve().relative_to(output_dir)})",
         md_text,
     )
 
 
 # TODO: this bug is fixed so we should be able to to remove this workaround
+# at next cleanup. This did work.
 def _move_images_to_correct_dir(
     pdf_dir: Path, image_dir: Path, md_text: str, existing_images: set[Path]
 ) -> str:
@@ -102,6 +103,11 @@ def _move_images_to_correct_dir(
 
     Workaround for pymupdf-layout bug where image_path parameter is ignored.
     Images are written to the PDF's directory instead of the specified path.
+
+    @pdf_dir: Path to directory that holds the PDF
+    @image_dir: Path to where the images *should* be.
+    @md_text: markdown text which will need patching
+    @existing_images: set of Paths to images
     """
     # Find new images created by to_markdown()
     current_images = set(pdf_dir.glob("*.png"))
@@ -214,10 +220,13 @@ def convert(
 
         # Workaround: pymupdf-layout ignores image_path and writes to PDF directory
         # Move images to the correct location and update markdown paths
-        if write_images:
-            md_text = _move_images_to_correct_dir(
-                pdf_dir, image_dir, md_text, existing_images
-            )
+        # This workaround is no longer needed since the bug is fixed,
+        # but leaving the code here for reference until the next clean up
+        # if write_images:
+            # md_text = _move_images_to_correct_dir(
+            #    pdf_dir, image_dir, md_text, existing_images
+            #)
+
 
         # Convert absolute image paths to relative (pymupdf-layout uses absolute paths)
         if write_images and output:
