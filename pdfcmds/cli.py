@@ -94,6 +94,7 @@ def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
     )
 
 
+# TODO: this bug is fixed so we should be able to to remove this workaround
 def _move_images_to_correct_dir(
     pdf_dir: Path, image_dir: Path, md_text: str, existing_images: set[Path]
 ) -> str:
