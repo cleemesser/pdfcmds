@@ -19,7 +19,7 @@ pymupdf.layout.activate()
 import pymupdf4llm  # ignore: E402
 
 DATA_DIR = Path(__file__).parent / "data"
-SAMPLE_PDF = DATA_DIR / "paper-with-figures.pdf"
+SAMPLE_PDF = DATA_DIR / "power2022-grokking.pdf" # paper-with-figures
 
 
 @pytest.fixture
@@ -32,7 +32,8 @@ def cleanup_pdf_dir_images():
         png.unlink()
 
 
-@pytest.mark.xfail(reason="pymupdf-layout bug: image_path parameter is ignored")
+# should be fixed in pymupdf4llm >= 0.2.8
+# @pytest.mark.xfail(reason="pymupdf-layout bug: image_path parameter is ignored")
 def test_image_path_parameter_respected(cleanup_pdf_dir_images):
     """Test that image_path parameter is respected by to_markdown().
 
