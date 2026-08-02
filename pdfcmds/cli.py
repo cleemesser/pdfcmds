@@ -1,5 +1,6 @@
 """Command-line interface for pdfcmds."""
 
+import logging
 import os
 import re
 import shutil
@@ -127,6 +128,215 @@ def _move_images_to_correct_dir(
     return md_text
 
 
+# Maps --ocr-mode to the vendored pdf2docx "ocr" setting. Upstream mode 1
+# ("perform OCR") is deliberately unreachable: pdf2docx raises
+# SystemExit("OCR feature is planned but not implemented yet.") for it.
+# See pdfcmds/_vendor/pdf2docx/page/RawPageFitz.py.
+OCR_MODES = {"none": 0, "ocred": 2}
+
+
+def _parse_page_spec(spec: str, page_count: int) -> list[int]:
+    """Turn a user page spec into zero-based page indexes for pdf2docx.
+
+    @spec: comma-separated, 1-based pages and ranges, e.g. "1-3,7,10-"
+    @page_count: number of pages in the PDF
+    Returns a list of 0-based indexes for Converter.convert(pages=...).
+
+    Pages beyond the document are clamped to it with a warning, rather than
+    failing, so a spec can be reused across PDFs of differing lengths. Reversed
+    ranges ("7-3") are rejected as typos. Duplicates and overlaps are kept in
+    the order given; note that pdf2docx marks pages for parsing and then emits
+    them in document order, so the ordering is not visible in the DOCX.
+    """
+    indexes: list[int] = []
+    # Held back until we know the spec selects something: otherwise a spec that
+    # is entirely out of range would report the same problem twice, once as a
+    # warning per token and again as the error below.
+    warnings: list[str] = []
+
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            raise click.UsageError(f"empty page in --pages {spec!r}")
+
+        if token.endswith("-"):  # open-ended, e.g. "10-" meaning 10 to the end
+            first, last = token[:-1], str(page_count)
+        elif "-" in token:
+            first, _, last = token.partition("-")
+        else:
+            first = last = token
+
+        try:
+            start, end = int(first), int(last)
+        except ValueError:
+            raise click.UsageError(
+                f"invalid page {token!r} in --pages; expected pages and ranges "
+                "like '1-3,7,10-'"
+            ) from None
+
+        if end < start:
+            raise click.UsageError(
+                f"reversed page range {token!r} in --pages; did you mean '{end}-{start}'?"
+            )
+
+        low, high = max(start, 1), min(end, page_count)
+        if (low, high) != (start, end):
+            if low > high:
+                warnings.append(
+                    f"--pages {token!r} selects no pages in a "
+                    f"{page_count}-page document; ignoring"
+                )
+            else:
+                warnings.append(
+                    f"--pages {token!r} clamped to {low}-{high} in a "
+                    f"{page_count}-page document"
+                )
+
+        indexes.extend(range(low - 1, high))  # 1-based inclusive -> 0-based
+
+    if not indexes:
+        raise click.UsageError(
+            f"--pages {spec!r} selects no pages in a {page_count}-page document"
+        )
+
+    for warning in warnings:
+        click.echo(f"Warning: {warning}", err=True)
+
+    return indexes
+
+
+def _convert_to_markdown(
+    input_file: Path,
+    output: Path | None,
+    use_stdout: bool,
+    write_images: bool,
+    embed_images: bool,
+    image_dir: Path | None,
+):
+    """Convert a PDF to markdown using pymupdf4llm."""
+    # Default output is {input_stem}.md unless --stdout is specified
+    if output is None and not use_stdout:
+        output = input_file.with_suffix(".md")
+
+    kwargs = {}
+    pdf_dir = input_file.parent
+    existing_images = set()
+
+    if embed_images:
+        kwargs["embed_images"] = True
+    elif write_images:
+        kwargs["write_images"] = True
+        # Default image directory is {input_stem}_images
+        if image_dir is None:
+            image_dir = pdf_dir / f"{input_file.stem}_images"
+        else:
+            image_dir = image_dir.resolve()
+        # Create the image directory if it doesn't exist
+        image_dir.mkdir(parents=True, exist_ok=True)
+        kwargs["image_path"] = str(image_dir)
+        # Record existing images before conversion (for workaround)
+        existing_images = set(pdf_dir.glob("*.png"))
+
+    md_text = pymupdf4llm.to_markdown(str(input_file), **kwargs)
+
+    # Workaround: pymupdf-layout ignores image_path and writes to PDF directory
+    # Move images to the correct location and update markdown paths
+    # This workaround is no longer needed since the bug is fixed,
+    # but leaving the code here for reference until the next clean up
+    # if write_images:
+        # md_text = _move_images_to_correct_dir(
+        #    pdf_dir, image_dir, md_text, existing_images
+        #)
+
+
+    # Convert absolute image paths to relative (pymupdf-layout uses absolute paths)
+    if write_images and output:
+        md_text = _make_image_paths_relative(md_text, output.parent.resolve())
+
+    if use_stdout:
+        # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
+        sys.stdout.buffer.write(md_text.encode("utf-8"))
+    else:
+        output.write_text(md_text, encoding="utf-8")
+        click.echo(f"Converted to {output}", err=True)
+
+
+def _convert_to_docx(
+    input_file: Path,
+    output: Path | None,
+    use_stdout: bool,
+    pages: str | None,
+    start: int | None,
+    end: int | None,
+    password: str | None,
+    ocr_mode: str,
+    multi_processing: bool,
+    cpu_count: int | None,
+    verbose: bool,
+):
+    """Convert a PDF to DOCX using the vendored pdf2docx."""
+    # Imported lazily: pdf2docx pulls in python-docx, numpy and cv2, which
+    # markdown conversion and `pdf check` should not have to pay for.
+    from ._vendor.pdf2docx import Converter
+    from ._vendor.pdf2docx.converter import ConversionException
+
+    # pdf2docx reports per-page progress on the *root* logger via logging.info.
+    # Its own logging.basicConfig call is patched out when vendoring (see
+    # VENDOR.md), so nothing is emitted unless we ask for it here. basicConfig
+    # is no good for that: it silently does nothing when the root logger already
+    # has handlers. Attach our own and take it back off afterwards, so a single
+    # conversion cannot permanently reconfigure logging for the host process.
+    root_logger = logging.getLogger()
+    handler = None
+    previous_level = root_logger.level
+    if verbose:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.INFO)
+
+    # Default output is {input_stem}.docx unless --stdout is specified
+    if output is None and not use_stdout:
+        output = input_file.with_suffix(".docx")
+
+    settings = {
+        "ocr": OCR_MODES[ocr_mode],
+        "multi_processing": multi_processing,
+    }
+    if cpu_count is not None:
+        settings["cpu_count"] = cpu_count
+
+    # pdf2docx takes 0-based page indexes, with start/end as a half-open slice.
+    # The CLI speaks 1-based inclusive pages.
+    if pages:
+        with pymupdf.open(str(input_file)) as doc:
+            page_count = doc.page_count
+        settings["pages"] = _parse_page_spec(pages, page_count)
+    else:
+        settings["start"] = start - 1 if start else 0
+        if end is not None:
+            settings["end"] = end
+
+    target = sys.stdout.buffer if use_stdout else str(output)
+
+    converter = Converter(str(input_file), password=password)
+    try:
+        converter.convert(target, **settings)
+    except ConversionException as exc:
+        # Surface pdf2docx's own errors (bad password, bad page range) as clean
+        # CLI messages rather than tracebacks.
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        # Converter has no context manager protocol.
+        converter.close()
+        if handler is not None:
+            root_logger.removeHandler(handler)
+            root_logger.setLevel(previous_level)
+
+    if not use_stdout:
+        click.echo(f"Converted to {output}", err=True)
+
+
 @click.group()
 @click.version_option()
 def main():
@@ -139,7 +349,7 @@ def main():
 @click.option(
     "--to",
     "output_format",
-    type=click.Choice(["markdown", "md"]),
+    type=click.Choice(["markdown", "md", "docx"]),
     required=True,
     help="Output format",
 )
@@ -147,7 +357,7 @@ def main():
     "-o",
     "--output",
     type=click.Path(path_type=Path),
-    help="Output file path (defaults to {input}.md)",
+    help="Output file path (defaults to {input}.md or {input}.docx)",
 )
 @click.option(
     "--stdout",
@@ -173,6 +383,52 @@ def main():
     type=click.Path(path_type=Path),
     help="Directory for extracted images (default: {input}_images)",
 )
+@click.option(
+    "--pages",
+    help="docx only: pages to convert, 1-based, e.g. '1-3,7' (cannot combine with --start/--end)",
+)
+@click.option(
+    "--start",
+    type=int,
+    help="docx only: first page to convert, 1-based (default: 1)",
+)
+@click.option(
+    "--end",
+    type=int,
+    help="docx only: last page to convert, 1-based and inclusive (default: last)",
+)
+@click.option(
+    "--password",
+    help="docx only: password for an encrypted PDF",
+)
+@click.option(
+    "--ocr-mode",
+    type=click.Choice(["none", "ocred"]),
+    default="none",
+    show_default=True,
+    help=(
+        "docx only: 'ocred' reads the hidden text layer of an already-OCR-ed PDF "
+        "and skips images. This does not run OCR"
+    ),
+)
+@click.option(
+    "--multi-processing",
+    is_flag=True,
+    default=False,
+    help="docx only: parse pages in parallel (cannot combine with --pages)",
+)
+@click.option(
+    "--cpu-count",
+    type=int,
+    help="docx only: worker count for --multi-processing (default: all cores)",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="docx only: report per-page conversion progress",
+)
 def convert(
     input_file: Path,
     output_format: str,
@@ -181,6 +437,14 @@ def convert(
     write_images: bool,
     embed_images: bool,
     image_dir: Path | None,
+    pages: str | None,
+    start: int | None,
+    end: int | None,
+    password: str | None,
+    ocr_mode: str,
+    multi_processing: bool,
+    cpu_count: int | None,
+    verbose: bool,
 ):
     """Convert PDF to other formats."""
     # Validate mutually exclusive options
@@ -189,55 +453,67 @@ def convert(
             "--write-images and --embed-images are mutually exclusive"
         )
 
+    markdown_only = {
+        "--write-images": write_images,
+        "--embed-images": embed_images,
+        "--image-dir": image_dir is not None,
+    }
+    docx_only = {
+        "--pages": pages is not None,
+        "--start": start is not None,
+        "--end": end is not None,
+        "--password": password is not None,
+        "--ocr-mode": ocr_mode != "none",
+        "--multi-processing": multi_processing,
+        "--cpu-count": cpu_count is not None,
+        "--verbose": verbose,
+    }
+    used_by_format = markdown_only if output_format == "docx" else docx_only
+    misused = [name for name, given in used_by_format.items() if given]
+    if misused:
+        other = "markdown" if output_format == "docx" else "docx"
+        raise click.UsageError(
+            f"{', '.join(misused)} {'are' if len(misused) > 1 else 'is'} only "
+            f"valid with --to {other}"
+        )
+
     # Resolve to absolute path to avoid pymupdf-layout path concatenation issues
     input_file = input_file.resolve()
 
-    if output_format in ("markdown", "md"):
-        # Default output is {input_stem}.md unless --stdout is specified
-        if output is None and not use_stdout:
-            output = input_file.with_suffix(".md")
+    if output_format == "docx":
+        if pages and (start is not None or end is not None):
+            raise click.UsageError("--pages cannot be combined with --start/--end")
+        # Upstream raises for this too, but only after opening the document.
+        if pages and multi_processing:
+            raise click.UsageError(
+                "--multi-processing works with continuous pages only; "
+                "use --start/--end instead of --pages"
+            )
+        if cpu_count is not None and not multi_processing:
+            raise click.UsageError("--cpu-count requires --multi-processing")
+        for name, value in (("--start", start), ("--end", end), ("--cpu-count", cpu_count)):
+            if value is not None and value < 1:
+                raise click.UsageError(f"{name} must be 1 or greater")
+        if start is not None and end is not None and end < start:
+            raise click.UsageError("--end must not be less than --start")
 
-        kwargs = {}
-        pdf_dir = input_file.parent
-        existing_images = set()
-
-        if embed_images:
-            kwargs["embed_images"] = True
-        elif write_images:
-            kwargs["write_images"] = True
-            # Default image directory is {input_stem}_images
-            if image_dir is None:
-                image_dir = pdf_dir / f"{input_file.stem}_images"
-            else:
-                image_dir = image_dir.resolve()
-            # Create the image directory if it doesn't exist
-            image_dir.mkdir(parents=True, exist_ok=True)
-            kwargs["image_path"] = str(image_dir)
-            # Record existing images before conversion (for workaround)
-            existing_images = set(pdf_dir.glob("*.png"))
-
-        md_text = pymupdf4llm.to_markdown(str(input_file), **kwargs)
-
-        # Workaround: pymupdf-layout ignores image_path and writes to PDF directory
-        # Move images to the correct location and update markdown paths
-        # This workaround is no longer needed since the bug is fixed,
-        # but leaving the code here for reference until the next clean up
-        # if write_images:
-            # md_text = _move_images_to_correct_dir(
-            #    pdf_dir, image_dir, md_text, existing_images
-            #)
-
-
-        # Convert absolute image paths to relative (pymupdf-layout uses absolute paths)
-        if write_images and output:
-            md_text = _make_image_paths_relative(md_text, output.parent.resolve())
-
-        if use_stdout:
-            # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
-            sys.stdout.buffer.write(md_text.encode("utf-8"))
-        else:
-            output.write_text(md_text, encoding="utf-8")
-            click.echo(f"Converted to {output}", err=True)
+        _convert_to_docx(
+            input_file,
+            output,
+            use_stdout,
+            pages,
+            start,
+            end,
+            password,
+            ocr_mode,
+            multi_processing,
+            cpu_count,
+            verbose,
+        )
+    else:
+        _convert_to_markdown(
+            input_file, output, use_stdout, write_images, embed_images, image_dir
+        )
 
 
 def find_tesseract() -> Path | None:

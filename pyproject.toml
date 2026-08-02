@@ -14,6 +14,13 @@ dependencies = [
     "pymupdf-layout>=1.26.0",
     "opencv-python>=4.8.0",
     "click>=8.0.0",
+    # Required by the vendored pdf2docx (pdfcmds/_vendor, see its VENDOR.md).
+    # Upstream asks for opencv-python-headless; opencv-python above provides the
+    # same `cv2` module, and installing both would put two competing builds in
+    # site-packages.
+    "python-docx>=0.8.10",
+    "fonttools>=4.24.0",
+    "numpy>=1.17.2",
 ]
 
 [project.scripts]
@@ -26,6 +33,16 @@ dev = [
 
 [tool.setuptools.dynamic]
 version = {attr = "pdfcmds.__version__"}
+
+# Explicit rather than autodiscovered: the vendored subpackages under
+# pdfcmds/_vendor must ship in the wheel, and top-level plans/ and scripts/
+# must not be mistaken for packages.
+[tool.setuptools.packages.find]
+include = ["pdfcmds*"]
+
+# The MIT license of the vendored pdf2docx must ship with the code it covers.
+[tool.setuptools.package-data]
+"pdfcmds._vendor" = ["VENDOR.md", "LICENSE.pdf2docx"]
 
 [dependency-groups]
 dev = [

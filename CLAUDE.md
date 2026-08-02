@@ -25,10 +25,29 @@ pdf convert --to markdown input.pdf -o out.md     # Output to specific file
 pdf convert --to markdown input.pdf --stdout      # Output to stdout
 pdf convert --to markdown input.pdf --write-images  # Extract images to files
 pdf convert --to markdown input.pdf --embed-images  # Embed images as base64
+pdf convert --to docx input.pdf                    # Output to input.docx (default)
+pdf convert --to docx input.pdf --start 5 --end 12 # Page range, 1-based inclusive
+pdf convert --to docx input.pdf --pages 1-3,7,10-  # Pages/ranges, "10-" = to the end
+pdf convert --to docx input.pdf --password secret  # Encrypted PDF
+pdf convert --to docx input.pdf --verbose          # Per-page progress
 pdf check                                          # Check if Tesseract OCR is installed
 ```
 
-Note: `--write-images` and `--embed-images` are mutually exclusive.
+Note: `--write-images` and `--embed-images` are mutually exclusive. Image options are
+markdown-only and page/password/OCR/multiprocessing options are docx-only; `convert`
+rejects the wrong combination rather than silently ignoring it.
+
+`--pages` semantics (`_parse_page_spec` in cli.py): 1-based and inclusive; out-of-range pages
+are clamped with a warning so one spec works across PDFs of different lengths, while a spec
+selecting nothing is an error; reversed ranges are rejected. Duplicates and overlaps are kept
+in the order typed, but pdf2docx only uses the list to set `skip_parsing` flags and then
+emits pages in document order — the ordering is not observable in the DOCX.
+
+`--ocr-mode ocred` does **not** run OCR. It maps to pdf2docx's `ocr=2`, meaning "this PDF
+already has an OCR text layer — read the hidden text and skip images." pdf2docx's `ocr=1`
+("do OCR") raises `SystemExit("OCR feature is planned but not implemented yet.")`, so the
+CLI can never emit it. Scanned PDFs with no text layer should go through markdown
+conversion, which does OCR via PyMuPDF/Tesseract.
 
 ## OCR Setup
 
@@ -187,9 +206,37 @@ Tesseract offers three tessdata variants:
 This is a CLI tool for PDF manipulation built on PyMuPDF and PyMuPDF4LLM.
 
 - **pdfcmds/cli.py**: Click-based CLI with command groups. Entry point is `main()`.
+  `convert` is a thin dispatcher over `_convert_to_markdown()` and `_convert_to_docx()`.
+- **pdfcmds/\_vendor/**: Third-party code vendored into the tree. See `_vendor/VENDOR.md`.
 - **pdfcmds/\_\_init__.py**: Package version (used by pyproject.toml dynamic versioning).
 
 New commands should be added as functions decorated with `@main.command()` in cli.py.
+
+### Vendored pdf2docx
+
+DOCX conversion uses `pdf2docx`, copied into `pdfcmds/_vendor/pdf2docx` rather than taken as
+a dependency, because:
+
+- Artifex no longer maintains it, so we need to be able to patch it when PyMuPDF moves.
+- It requires `opencv-python-headless`, which would install a second, competing `cv2`
+  alongside the `opencv-python` this project already depends on.
+- Its `fire` CLI and tkinter GUI are dead weight here.
+
+**Do not hand-edit `pdfcmds/_vendor/pdf2docx/`.** Express changes as `PATCHES` in
+`scripts/sync_vendor.py` so they survive re-syncing:
+
+```bash
+python scripts/sync_vendor.py            # re-vendor the pinned version
+python scripts/sync_vendor.py --check    # verify the tree matches upstream + patches
+python scripts/sync_vendor.py --version 0.6.0   # move to a new release
+```
+
+A patch that no longer applies is a hard error — that is the signal upstream changed
+something we depend on.
+
+The vendored code is imported lazily inside `_convert_to_docx()`; it pulls in python-docx,
+numpy and cv2, which markdown conversion and `pdf check` should not pay for (~18s cold,
+0.2s warm).
 
 ## Known Issues
 
