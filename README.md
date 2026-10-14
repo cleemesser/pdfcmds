@@ -35,6 +35,36 @@ pdf convert --to markdown document.pdf --write-images
 pdf convert --to markdown document.pdf --embed-images
 ```
 
+### Convert PDF to HTML
+
+```bash
+# Convert to HTML (outputs to input.html by default)
+pdf convert --to html document.pdf
+
+# Leave the images out instead of inlining them
+pdf convert --to html document.pdf --no-images
+
+# Page selection and encrypted PDFs work as they do for docx
+pdf convert --to html document.pdf --pages 1-3,7,10-
+pdf convert --to html document.pdf --password secret
+
+# Output to stdout (for piping)
+pdf convert --to html document.pdf --stdout > page.html
+```
+
+The output is a standalone HTML document (`<!DOCTYPE html>`, `<meta charset="utf-8">`, a
+`<title>` taken from the PDF metadata or the file name, and a small built-in stylesheet)
+with one `<section class="page" data-page="N">` per converted page. It carries the
+document's semantic content — headings, paragraphs, tables, lists, images — and reflows to
+any window; it is deliberately not a page replica. Images are inlined as `data:` URIs, so
+the file needs nothing alongside it.
+
+The HTML is rendered from the same pipeline as `--to markdown` (see
+[docs/adr/0001](docs/adr/0001-html-output-renders-the-markdown-pipeline.md)), so its content
+quality is the markdown pipeline's: measured against the PDF's own text layer, it recovers
+98.6% of the words in `tests/data/power2022-grokking.pdf`, and table quality is whatever that
+pipeline produces.
+
 ### Convert PDF to DOCX
 
 ```bash

@@ -30,11 +30,16 @@ pdf convert --to docx input.pdf --start 5 --end 12 # Page range, 1-based inclusi
 pdf convert --to docx input.pdf --pages 1-3,7,10-  # Pages/ranges, "10-" = to the end
 pdf convert --to docx input.pdf --password secret  # Encrypted PDF
 pdf convert --to docx input.pdf --verbose          # Per-page progress
+pdf convert --to html input.pdf                    # Output to input.html (default)
+pdf convert --to html input.pdf --no-images        # Text and tables, no figures
+pdf convert --to html input.pdf --pages 1-3,7      # html also takes page selection
 pdf check                                          # Check if Tesseract OCR is installed
 ```
 
-Note: `--write-images` and `--embed-images` are mutually exclusive. Image options are
-markdown-only and page/password/OCR/multiprocessing options are docx-only; `convert`
+Note: `--write-images` and `--embed-images` are mutually exclusive. Which options each
+format understands is declared in `FORMAT_OPTIONS` in cli.py: image-file options are
+markdown-only, `--no-images` is html-only, and OCR/multiprocessing options are docx-only,
+while `--pages`, `--start`, `--end` and `--password` work for both docx and html. `convert`
 rejects the wrong combination rather than silently ignoring it.
 
 `--pages` semantics (`_parse_page_spec` in cli.py): 1-based and inclusive; out-of-range pages
@@ -206,7 +211,9 @@ Tesseract offers three tessdata variants:
 This is a CLI tool for PDF manipulation built on PyMuPDF and PyMuPDF4LLM.
 
 - **pdfcmds/cli.py**: Click-based CLI with command groups. Entry point is `main()`.
-  `convert` is a thin dispatcher over `_convert_to_markdown()` and `_convert_to_docx()`.
+  `convert` is a thin dispatcher over `_convert_to_markdown()`, `_convert_to_docx()` and
+  `_convert_to_html()`. HTML output renders pymupdf4llm's markdown with mistune (one
+  document, one `<section>` per page); see `docs/adr/0001`.
 - **pdfcmds/\_vendor/**: Third-party code vendored into the tree. See `_vendor/VENDOR.md`.
 - **pdfcmds/\_\_init__.py**: Package version (used by pyproject.toml dynamic versioning).
 
@@ -239,6 +246,21 @@ numpy and cv2, which markdown conversion and `pdf check` should not pay for (~18
 0.2s warm).
 
 ## Known Issues
+
+### pymupdf4llm disagrees with itself about the page number key
+
+cli.py activates `pymupdf.layout` **before** importing `pymupdf4llm`, which puts the library
+in layout mode. In layout mode, `to_markdown(page_chunks=True)` reports each chunk's page as
+`metadata["page_number"]`; in legacy mode the same field is called `metadata["page"]`. Reading
+either key is what `_page_number()` in cli.py exists for. Chunks arrive in document order
+even when `pages=[4, 0]` was asked for, which is why `data-page` is trustworthy.
+
+### pymupdf4llm's `<br>` and mistune's escaping
+
+pymupdf4llm writes `<br>` inside table cells to hold separate lines. mistune escapes text by
+default, which is what keeps markup *inside a PDF* inert (see `TestHtmlSecurity`), so
+`_markdown_to_html()` puts exactly that one tag back after rendering. Do not switch the
+renderer to `escape=False` to fix the breaks: that would let a PDF inject live HTML.
 
 ### pymupdf-layout ignores image_path parameter
 

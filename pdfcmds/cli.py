@@ -5,9 +5,11 @@ import os
 import re
 import shutil
 import sys
+from html import escape as html_escape
 from pathlib import Path
 
 import click
+import mistune
 
 # Common Tesseract installation paths on Windows
 WINDOWS_TESSERACT_PATHS = [
@@ -76,6 +78,18 @@ import pymupdf4llm  # noqa:E402
 
 
 
+def _try_relative(img_path: str, output_dir: Path) -> str:
+    """Make img_path relative to output_dir, or leave it alone if it is outside.
+
+    img_path may be relative to the current directory, which is what pymupdf-layout
+    writes, so it is resolved before being relativized against output_dir.
+    """
+    try:
+        return Path(img_path).resolve().relative_to(output_dir).as_posix()
+    except ValueError:
+        return img_path
+
+
 def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
     """Convert absolute image paths in markdown text to relative paths.
 
@@ -90,7 +104,7 @@ def _make_image_paths_relative(md_text: str, output_dir: Path) -> str:
     # base path output_dir
     return re.sub(
         r"!\[([^\]]*)\]\(([^)]+)\)",
-        lambda m: f"![{m.group(1)}]({Path(m.group(2)).resolve().relative_to(output_dir)})",
+        lambda m: f"![{m.group(1)}]({_try_relative(m.group(2), output_dir)})",
         md_text,
     )
 
@@ -134,9 +148,27 @@ def _move_images_to_correct_dir(
 # See pdfcmds/_vendor/pdf2docx/page/RawPageFitz.py.
 OCR_MODES = {"none": 0, "ocred": 2}
 
+# Which options each output format understands; anything else is rejected, naming
+# the formats that do take it. FORMAT_ORDER also orders the formats in that message.
+FORMAT_OPTIONS = {
+    "markdown": {"--write-images", "--embed-images", "--image-dir"},
+    "docx": {
+        "--pages",
+        "--start",
+        "--end",
+        "--password",
+        "--ocr-mode",
+        "--multi-processing",
+        "--cpu-count",
+        "--verbose",
+    },
+    "html": {"--pages", "--start", "--end", "--password", "--no-images"},
+}
+FORMAT_ORDER = ("markdown", "docx", "html")
+
 
 def _parse_page_spec(spec: str, page_count: int) -> list[int]:
-    """Turn a user page spec into zero-based page indexes for pdf2docx.
+    """Turn a user page spec into zero-based page indexes for pdf2docx and HTML.
 
     @spec: comma-separated, 1-based pages and ranges, e.g. "1-3,7,10-"
     @page_count: number of pages in the PDF
@@ -205,6 +237,16 @@ def _parse_page_spec(spec: str, page_count: int) -> list[int]:
     return indexes
 
 
+def _write_text_output(text: str, output: Path | None, use_stdout: bool) -> None:
+    """Write converted text to a file, or to stdout as UTF-8 bytes."""
+    if use_stdout:
+        # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
+        sys.stdout.buffer.write(text.encode("utf-8"))
+    else:
+        output.write_text(text, encoding="utf-8")
+        click.echo(f"Converted to {output}", err=True)
+
+
 def _convert_to_markdown(
     input_file: Path,
     output: Path | None,
@@ -253,12 +295,100 @@ def _convert_to_markdown(
     if write_images and output:
         md_text = _make_image_paths_relative(md_text, output.parent.resolve())
 
-    if use_stdout:
-        # Write UTF-8 bytes directly to stdout to avoid Windows encoding issues
-        sys.stdout.buffer.write(md_text.encode("utf-8"))
-    else:
-        output.write_text(md_text, encoding="utf-8")
-        click.echo(f"Converted to {output}", err=True)
+    _write_text_output(md_text, output, use_stdout)
+
+
+# Deliberately small and opinionated: no --css/--template in v1, so the only
+# styling promise is "readable prose, visible table rules, figures that fit".
+HTML_STYLE = """
+body { margin: 2rem auto; max-width: 70ch; padding: 0 1rem; line-height: 1.5;
+       font-family: sans-serif; color: #1a1a1a; }
+section.page { margin: 2rem 0; padding-top: 1rem; border-top: 1px solid #ddd; }
+section.page:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #bbb; padding: 0.3rem 0.5rem; vertical-align: top; }
+img { max-width: 100%; height: auto; }
+"""
+
+_MD_TO_HTML = mistune.create_markdown(escape=True, plugins=["table"])
+
+
+def _markdown_to_html(md_text: str) -> str:
+    """Render pymupdf4llm's markdown to HTML.
+
+    pymupdf4llm writes <br> to hold separate lines inside one table cell. Escaping
+    text is what keeps a PDF's own "<script>" inert, but it also turns those breaks
+    into visible "&lt;br&gt;", so put that one tag back.
+    """
+    return re.sub(r"&lt;br\s*/?&gt;", "<br>", _MD_TO_HTML(md_text))
+
+
+def _page_number(chunk: dict) -> int:
+    """1-based page number of a page chunk.
+
+    pymupdf4llm's layout mode, which this module turns on before importing it, calls
+    the field "page_number"; its legacy mode calls the same thing "page".
+    """
+    metadata = chunk["metadata"]
+    return metadata.get("page_number") or metadata["page"]
+
+
+def _html_document(title: str, body: str) -> str:
+    """Wrap rendered body content in a standalone HTML document."""
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{html_escape(title)}</title>\n"
+        f"<style>{HTML_STYLE}</style>"
+        "</head>\n<body>\n"
+        f"{body}\n"
+        "</body>\n</html>\n"
+    )
+
+
+def _convert_to_html(
+    input_file: Path,
+    output: Path | None,
+    use_stdout: bool,
+    pages: str | None,
+    start: int | None,
+    end: int | None,
+    password: str | None,
+    no_images: bool,
+):
+    """Convert a PDF to a standalone HTML document built on the markdown pipeline."""
+    if output is None and not use_stdout:
+        output = input_file.with_suffix(".html")
+
+    try:
+        doc = pymupdf.open(str(input_file))
+    except pymupdf.FileDataError as exc:
+        raise click.ClickException(f"Cannot open {input_file}: {exc}") from exc
+
+    with doc:
+        if doc.needs_pass and not doc.authenticate(password or ""):
+            raise click.ClickException("Incorrect password")
+
+        spec = pages
+        if spec is None and (start is not None or end is not None):
+            spec = f"{start or 1}-{end if end is not None else ''}"
+        indexes = _parse_page_spec(spec, doc.page_count) if spec else None
+        title = (doc.metadata or {}).get("title") or input_file.stem
+        # page_chunks keeps page boundaries; embed_images keeps the document
+        # self-contained, which is the whole point of HTML for email or a USB stick.
+        chunks = pymupdf4llm.to_markdown(
+            doc, page_chunks=True, embed_images=not no_images, pages=indexes
+        )
+
+    body = "\n".join(
+        '<section class="page" id="page-{0}" data-page="{0}">\n{1}</section>'.format(
+            _page_number(chunk), _markdown_to_html(chunk["text"])
+        )
+        for chunk in chunks
+    )
+    _write_text_output(_html_document(title, body), output, use_stdout)
 
 
 def _convert_to_docx(
@@ -349,7 +479,7 @@ def main():
 @click.option(
     "--to",
     "output_format",
-    type=click.Choice(["markdown", "md", "docx"]),
+    type=click.Choice(["markdown", "md", "docx", "html"]),
     required=True,
     help="Output format",
 )
@@ -357,7 +487,7 @@ def main():
     "-o",
     "--output",
     type=click.Path(path_type=Path),
-    help="Output file path (defaults to {input}.md or {input}.docx)",
+    help="Output file path (defaults to {input}.md, .docx or .html)",
 )
 @click.option(
     "--stdout",
@@ -370,7 +500,7 @@ def main():
     "--write-images",
     is_flag=True,
     default=False,
-    help="Extract images to a directory (default: {input}_images)",
+    help="markdown only: extract images to a directory (default: {input}_images)",
 )
 @click.option(
     "--embed-images",
@@ -381,25 +511,31 @@ def main():
 @click.option(
     "--image-dir",
     type=click.Path(path_type=Path),
-    help="Directory for extracted images (default: {input}_images)",
+    help="markdown only: directory for extracted images (default: {input}_images)",
 )
 @click.option(
     "--pages",
-    help="docx only: pages to convert, 1-based, e.g. '1-3,7' (cannot combine with --start/--end)",
+    help="docx/html only: pages to convert, 1-based, e.g. '1-3,7' (cannot combine with --start/--end)",
 )
 @click.option(
     "--start",
     type=int,
-    help="docx only: first page to convert, 1-based (default: 1)",
+    help="docx/html only: first page to convert, 1-based (default: 1)",
 )
 @click.option(
     "--end",
     type=int,
-    help="docx only: last page to convert, 1-based and inclusive (default: last)",
+    help="docx/html only: last page to convert, 1-based and inclusive (default: last)",
 )
 @click.option(
     "--password",
-    help="docx only: password for an encrypted PDF",
+    help="docx/html only: password for an encrypted PDF",
+)
+@click.option(
+    "--no-images",
+    is_flag=True,
+    default=False,
+    help="html only: leave images out of the document instead of inlining them",
 )
 @click.option(
     "--ocr-mode",
@@ -445,20 +581,22 @@ def convert(
     multi_processing: bool,
     cpu_count: int | None,
     verbose: bool,
+    no_images: bool,
 ):
     """Convert PDF to other formats."""
+    fmt = "markdown" if output_format == "md" else output_format
+
     # Validate mutually exclusive options
     if write_images and embed_images:
         raise click.UsageError(
             "--write-images and --embed-images are mutually exclusive"
         )
 
-    markdown_only = {
+    given = {
         "--write-images": write_images,
         "--embed-images": embed_images,
         "--image-dir": image_dir is not None,
-    }
-    docx_only = {
+        "--no-images": no_images,
         "--pages": pages is not None,
         "--start": start is not None,
         "--end": end is not None,
@@ -468,22 +606,26 @@ def convert(
         "--cpu-count": cpu_count is not None,
         "--verbose": verbose,
     }
-    used_by_format = markdown_only if output_format == "docx" else docx_only
-    misused = [name for name, given in used_by_format.items() if given]
-    if misused:
-        other = "markdown" if output_format == "docx" else "docx"
-        raise click.UsageError(
-            f"{', '.join(misused)} {'are' if len(misused) > 1 else 'is'} only "
-            f"valid with --to {other}"
-        )
+    for flag, was_given in given.items():
+        if was_given and flag not in FORMAT_OPTIONS[fmt]:
+            targets = ", ".join(
+                name for name in FORMAT_ORDER if flag in FORMAT_OPTIONS[name]
+            )
+            raise click.UsageError(f"{flag} is only valid with --to {targets}")
 
     # Resolve to absolute path to avoid pymupdf-layout path concatenation issues
     input_file = input_file.resolve()
 
-    if output_format == "docx":
-        if pages and (start is not None or end is not None):
-            raise click.UsageError("--pages cannot be combined with --start/--end")
-        # Upstream raises for this too, but only after opening the document.
+    if pages and (start is not None or end is not None):
+        raise click.UsageError("--pages cannot be combined with --start/--end")
+    for name, value in (("--start", start), ("--end", end)):
+        if value is not None and value < 1:
+            raise click.UsageError(f"{name} must be 1 or greater")
+    if start is not None and end is not None and end < start:
+        raise click.UsageError("--end must not be less than --start")
+
+    if fmt == "docx":
+        # Upstream raises for these too, but only after opening the document.
         if pages and multi_processing:
             raise click.UsageError(
                 "--multi-processing works with continuous pages only; "
@@ -491,11 +633,8 @@ def convert(
             )
         if cpu_count is not None and not multi_processing:
             raise click.UsageError("--cpu-count requires --multi-processing")
-        for name, value in (("--start", start), ("--end", end), ("--cpu-count", cpu_count)):
-            if value is not None and value < 1:
-                raise click.UsageError(f"{name} must be 1 or greater")
-        if start is not None and end is not None and end < start:
-            raise click.UsageError("--end must not be less than --start")
+        if cpu_count is not None and cpu_count < 1:
+            raise click.UsageError("--cpu-count must be 1 or greater")
 
         _convert_to_docx(
             input_file,
@@ -509,6 +648,17 @@ def convert(
             multi_processing,
             cpu_count,
             verbose,
+        )
+    elif fmt == "html":
+        _convert_to_html(
+            input_file,
+            output,
+            use_stdout,
+            pages,
+            start,
+            end,
+            password,
+            no_images,
         )
     else:
         _convert_to_markdown(

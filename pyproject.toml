@@ -21,6 +21,7 @@ dependencies = [
     "python-docx>=0.8.10",
     "fonttools>=4.24.0",
     "numpy>=1.17.2",
+    "mistune>=3.3.4",
 ]
 
 [project.scripts]
