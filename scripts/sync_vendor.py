@@ -23,6 +23,7 @@ import filecmp
 import hashlib
 import io
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -61,6 +62,18 @@ PATCHES = [
         "# logging.basicConfig removed when vendoring; see VENDOR.md",
     ),
 ]
+
+# Exact-string edits applied to every module that contains them. (old, new).
+# `fitz` is PyMuPDF's deprecated alias; importing the real `pymupdf` package under
+# the old name leaves every `fitz.X` call site untouched. Each rule must match at
+# least once, and any fitz import left afterwards is a hard error.
+REWRITES = [
+    ("\nimport fitz\n", "\nimport pymupdf as fitz\n"),
+    ("\nfrom fitz.utils import ", "\nfrom pymupdf.utils import "),
+    ("\nfrom fitz import ", "\nfrom pymupdf import "),
+]
+
+FITZ_IMPORT = re.compile(r"^\s*(import|from)\s+fitz\b", re.MULTILINE)
 
 
 def fetch_release(version: str) -> tuple[bytes, str, str]:
@@ -113,12 +126,30 @@ def build_tree(payload: bytes, destination: Path) -> str:
             )
         path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
+    for old, new in REWRITES:
+        hits = 0
+        for path in package_dir.rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if old in source:
+                path.write_text(source.replace(old, new), encoding="utf-8")
+                hits += 1
+        if not hits:
+            raise SystemExit(
+                f"rewrite matched nothing: upstream changed.\n"
+                f"  looked for: {old!r}\n"
+                f"Review the change and update REWRITES in {Path(__file__).name}."
+            )
+
     # Nothing we keep may pull in the deps we deliberately shed.
     for path in package_dir.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         for banned in ("import fire", "tkinter"):
             if banned in source:
                 raise SystemExit(f"{path.relative_to(package_dir)} still references {banned}")
+        if FITZ_IMPORT.search(source):
+            raise SystemExit(
+                f"{path.relative_to(package_dir)} still imports fitz; add a rule to REWRITES"
+            )
 
     dist_info = next(destination.glob(f"{PACKAGE}-*.dist-info"))
     return (dist_info / "licenses" / "LICENSE").read_text(encoding="utf-8")
@@ -165,6 +196,7 @@ changes as `PATCHES` in that script so they survive the next sync.
 |---|---|---|
 | `__init__.py` | drop `from .main import parse` | `main.py` is not vendored |
 | `converter.py` | drop `logging.basicConfig(...)` | Upstream configured the *root* logger at import time, hijacking logging for the whole host process. `pdfcmds.cli` sets its own verbosity (`--verbose`). |
+| all modules | `import fitz` → `import pymupdf as fitz`, `from fitz…` → `from pymupdf…` | `fitz` is PyMuPDF's deprecated alias. Binding the real package to the old name leaves every `fitz.X` call site unchanged. A sync fails if any `fitz` import survives. |
 
 ### Dependencies
 
@@ -172,12 +204,6 @@ Vendoring drops upstream's `fire` requirement. Still required, and declared in
 `pyproject.toml`: `python-docx`, `fonttools`, `numpy`, and `opencv-python` (upstream asks
 for `opencv-python-headless`; either provides the `cv2` module this code imports, and we
 deliberately keep the non-headless build already used by `pdfcmds`).
-
-### Known future patch
-
-The vendored code uses `import fitz`, PyMuPDF's deprecated alias. It still resolves on
-PyMuPDF 1.27.1. When it is finally removed upstream, the fix is `import pymupdf as fitz`
-per module. Left alone for now to keep the vendor diff at zero.
 """,
         encoding="utf-8",
     )

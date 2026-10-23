@@ -45,7 +45,7 @@ Data structure::
     from source dict.
 '''
 
-import fitz
+import pymupdf as fitz
 from ..common.Element import Element
 from ..common.share import RectType
 from ..common import constants

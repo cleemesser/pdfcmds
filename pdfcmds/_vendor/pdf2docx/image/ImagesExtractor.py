@@ -10,7 +10,7 @@ Both raster images and vector graphics are considered:
 
 import logging
 import math
-import fitz
+import pymupdf as fitz
 from ..common.Collection import Collection
 from ..common.share import BlockType
 from ..common.algorithm import recursive_xy_cut, inner_contours, xy_project_profile

@@ -6,7 +6,7 @@ from multiprocessing import Pool, cpu_count
 from time import perf_counter
 from typing import AnyStr, IO, Union
 
-import fitz
+import pymupdf as fitz
 from docx import Document
 
 from .page.Page import Page

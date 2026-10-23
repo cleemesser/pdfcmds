@@ -8,7 +8,7 @@ Square and Highlight considered.
 * https://pymupdf.readthedocs.io/en/latest/faq.html#extracting-drawings
 '''
 
-import fitz
+import pymupdf as fitz
 from ..image.ImagesExtractor import ImagesExtractor
 from ..common.share import lazyproperty
 from ..common.Collection import  Collection

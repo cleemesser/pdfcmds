@@ -27,7 +27,7 @@ this `link <https://pymupdf.readthedocs.io/en/latest/textpage.html>`_::
     }
 '''
 
-import fitz
+import pymupdf as fitz
 from docx.shared import Pt, RGBColor
 from docx.oxml.ns import qn
 from .Char import Char

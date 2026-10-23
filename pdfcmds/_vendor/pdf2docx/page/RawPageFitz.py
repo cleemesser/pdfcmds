@@ -4,7 +4,7 @@
 A wrapper of PyMuPDF Page as page engine.
 '''
 
-import fitz
+import pymupdf as fitz
 import logging
 from .RawPage import RawPage
 from ..image.ImagesExtractor import ImagesExtractor

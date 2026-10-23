@@ -28,7 +28,7 @@ References:
     i.e. with rotation considered. This is different from ``page.get_text('rawdict')``.
 '''
 
-import fitz
+import pymupdf as fitz
 from ..common.share import rgb_value
 from ..common import constants
 

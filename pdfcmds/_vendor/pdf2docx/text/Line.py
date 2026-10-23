@@ -14,7 +14,7 @@ Data structure of line in text block referring to this
     }
 '''
 
-from fitz import Point
+from pymupdf import Point
 try:
     # Python <= 3.9
     from collections import Iterable

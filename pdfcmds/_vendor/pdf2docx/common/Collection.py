@@ -3,7 +3,7 @@
 '''A group of instances, e.g. Blocks, Lines, Spans, Shapes.
 '''
 
-import fitz
+import pymupdf as fitz
 from .Element import Element
 from .share import (IText, TextDirection)
 from .algorithm import (solve_rects_intersection, graph_bfs)

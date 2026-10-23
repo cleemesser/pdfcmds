@@ -168,7 +168,6 @@ page selection, each rejected flag combination, and that a converted DOCX opens 
   from the wheel. Explicitly verified in the build step above.
 - **Upstream is unmaintained.** Accepted, and the reason we're vendoring. `VENDOR.md` is what
   makes the next PyMuPDF break tractable.
-- **`import fitz` deprecation.** Works on 1.27.1 today. When it breaks, the patch is a
-  one-line `import pymupdf as fitz` per module; logged in `VENDOR.md` as a known future edit.
-  Not doing it now keeps the vendor diff at zero.
+- **`import fitz` deprecation.** Done: `REWRITES` in `scripts/sync_vendor.py` turns every
+  `fitz` import into `pymupdf` at sync time, and a sync fails if any `fitz` import survives.
 - **Multi-processing** is upstream's flakiest path. Off by default, opt-in only.

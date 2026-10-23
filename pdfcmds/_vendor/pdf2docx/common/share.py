@@ -3,7 +3,7 @@
 from enum import Enum
 import random
 from collections.abc import Iterable
-from fitz.utils import getColorList, getColorInfoList
+from pymupdf.utils import getColorList, getColorInfoList
 
 
 class BlockType(Enum):
